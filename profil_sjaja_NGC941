@@ -1,0 +1,261 @@
+# %%
+from photutils.isophote import Ellipse
+import numpy as np
+from astropy.modeling.models import Gaussian2D
+from photutils.datasets import make_noise_image
+import matplotlib.pyplot as plt
+from photutils.aperture import EllipticalAperture
+from photutils.isophote import EllipseGeometry
+from astropy.io import fits 
+from matplotlib.colors import LogNorm
+
+# %%
+#importovanje i opsecanje fits fajla
+
+fits_file = fits.open('corrected_i.fits')
+data = fits_file[0].data 
+
+section1 = data[1150:1489, 830:1300]
+plt.imshow(section1, origin='lower', norm = LogNorm(), cmap = "Greys")
+plt.title('NGC 941')
+
+geometry2 = EllipseGeometry(x0=230, y0=194, sma=180, eps=0.27, pa=3)
+aper = EllipticalAperture((geometry2.x0, geometry2.y0), geometry2.sma,geometry2.sma * (1 - geometry2.eps), geometry2.pa)
+
+plt.imshow(section1, origin='lower', norm = LogNorm(), cmap = "Greys")
+#aper.plot(color='black')
+
+ellipse = Ellipse(section1, geometry2)
+isolist = ellipse.fit_image(fix_eps=True)
+ 
+isolist.to_table() #fiksiraj elipsicitiitijt
+
+
+# %%
+#odredjivanje pozadine
+
+from astropy.stats import SigmaClip
+from photutils.background import Background2D, MedianBackground
+from photutils.datasets import make_100gaussians_image
+
+#Background2D procenjuje pozadinu fits fajla po boxovima 
+#box je drugi parametar f-je i odredjuje koliko pixela se uzima u obzir prilikom odredjivanja pozadinskog RMS-a
+
+sigma_clip = SigmaClip(sigma=3.0)
+bkg_estimator = MedianBackground()
+bkg = Background2D(section1, (40, 40), filter_size=(3, 3), sigma_clip=sigma_clip, bkg_estimator=bkg_estimator)
+
+plt.imshow(bkg.background, origin='lower', cmap='Greys', interpolation='nearest')
+plt.title('Pozadina NGC 941 (1)')
+
+print(bkg.background_rms_median)  
+
+# %%
+granica = 5.3
+
+mask = section1>granica
+masked_section1 = np.ma.masked_array(section1, mask)
+
+plt.imshow(np.log10(masked_section1), origin = "lower")
+plt.colorbar()
+plt.show()
+
+# %%
+#sma - najveći mogući za fit je 180 
+#eps - najveći eks. koju isophote meri je 0.27
+#pa - najveći koju isophote meri je 160
+
+sma0 = 160
+eps0 = 0.27
+pa0 = 3
+	
+geometry2 = EllipseGeometry(x0=230, y0=194, sma=sma0, eps=eps0, pa=pa0)
+aper = EllipticalAperture((geometry2.x0, geometry2.y0), geometry2.sma,geometry2.sma * (1 - geometry2.eps), geometry2.pa)
+
+plt.imshow(masked_section1, norm = LogNorm(), origin='lower', cmap = "Greys") #origin='lower'
+#aper.plot(color='black')
+Ć
+
+isolist = ellipse.fit_image(fix_eps = True)
+isolist.to_table()
+
+
+# %%
+#2)metod
+
+#informacije iz hedera:
+#1 nanomaggy = 3.631e-6 Jy    
+#NMGY = 0.00683810 
+#1 pixel = 0.39591036 arcsec
+
+counts = 0.00683810 #nMgy/count
+lam_i = 6166 #amgstronm (proveri za data release 9)
+
+flux = counts*3.631*(10**6)*2.994*(10**-5)*(1/lam_i)**2
+print(flux)
+
+dn = 1
+exptime = 54.907456 #heder
+
+zeropoint = 2.5*np.log10(dn/exptime)
+
+magnitude = zeropoint - 2.5*np.log10(flux)
+intens_mag_arcsec = isolist.intens*magnitude
+
+#magnitude = zeropoint - 2.5*np.log10(flux)
+#print(magnitude)
+ 
+#plt.errorbar(sma_arcsec, sb, yerr=isolist.int_err,fmt='p', markersize=2)
+#plt.xlabel(r'Udaljenost od centra $[arcsec]$')
+#plt.ylabel(r'Intenzitet sjaja $[\frac{mag}{arcsec^2}]$')
+
+
+# %%
+#1)metod
+
+from astropy import units as u
+
+exptime = 54.907456 #heder
+
+sb = - 2.5*np.log10(isolist.intens) + 2.5*np.log10(exptime) + 24 + 2.5*np.log10(0.396)
+sma_arcsec = isolist.sma*0.39591036
+
+plt.errorbar(sma_arcsec, sb, yerr=isolist.int_err,fmt='p', markersize=2)
+plt.xlabel(r'Udaljenost od centra $[arcsec]$')
+plt.ylabel(r'Intenzitet sjaja $[\frac{mag}{arcsec^2}]$')
+
+ax = plt.gca()
+ax.set_ylim(ax.get_ylim()[::-1]) #osa je okrenuta
+
+# %%
+#PARAMETRI SERZIKA (isolist tabela za precizne)
+
+sb_r0 = 0.10442329032184806 #sjaj na r0
+r0 = 90.31582880860437	 #r0
+
+amp0 = - 2.5*np.log10(sb_r0) + 2.5*np.log10(exptime) + 24 + 2.5*np.log10(0.396)
+
+r_eff0 = r0*0.39591036
+n_sersic = 1
+
+sb_mag = - 2.5*np.log10(isolist.intens) + 2.5*np.log10(exptime) + 24 + 2.5*np.log10(0.396)
+
+print("r0:", r_eff0)
+print("Amplituda na r0:", amp0)
+
+# %%
+from scipy.optimize import curve_fit
+
+def sersic(r, I_e, R_e, n):
+    b_n = 1.9992*n - 1/3  
+    return I_e * np.exp(-b_n * ((r/R_e)**(1/n) - 1))
+
+popt_o2, pcov_o2 = curve_fit(sersic, sma_arcsec, sb_mag , p0=[amp0, r_eff0, n_sersic]) #sigma=isolist.int_err
+plt.errorbar(np.log10(sma_arcsec), sb_mag, fmt='o', label='Podaci', markersize=2, capsize=2) #yerr=surface_brightnesses_error_o3
+plt.plot(np.log10(sma_arcsec), sersic(sma_arcsec, *popt_o2), label='Serzik fit: I_e=%5.3f, R_e=%5.3f, n=%5.3f' % tuple(popt_o2), color = 'red')
+plt.legend()
+plt.xlabel(r'R $[arcsec]$')
+plt.ylabel(r'$\mu$ $[\frac{mag}{arcsec^2}]$')
+
+ax = plt.gca()
+ax.set_ylim(ax.get_ylim()[::-1])
+
+#kad se logaitmuje x osa....
+
+# %%
+def exp(x, a, b, c): 
+    return a*np.exp(b*x) + c
+
+a_1 = 10
+b_1 = - 0.5
+c_1 = 15
+
+popt_o2, pcov_o2 = curve_fit(exp, sma_arcsec , sb_mag, p0=[a_1, b_1, c_1]) #sigma=isolist.int_err
+
+plt.errorbar(np.log10(sma_arcsec), sb_mag, fmt='o', label='Podaci', markersize=2, capsize=2) #yerr=surface_brightnesses_error_o3
+plt.plot(np.log10(sma_arcsec), exp(sma_arcsec, *popt_o2), label="Eksponencijalni fit: a=%5.3f, b=%5.3f, c=%5.3f" % tuple(popt_o2), color = 'red')
+plt.legend()
+plt.xlabel(r'R $[arcsec]$')
+plt.ylabel(r'$\mu$ $[\frac{mag}{arcsec^2}]$')
+plt.title("NGC 941 profil površinskog sjaja")
+
+ax = plt.gca()
+ax.set_ylim(ax.get_ylim()[::-1]) #osa je okrenuta
+
+#PREPORUKA SMOLIĆA: 
+# moffat za centar, 
+# eksponencijalna za ceo disk, 
+# eventualno serzik ili dva za spirale
+
+
+
+# %%
+r_log_ods1 = 0.05
+r_log_ods2 = 1.1
+
+r_ods1 = (10**(r_log_ods1))/0.39591036
+r_ods2 = (10**(r_log_ods2))/0.39591036
+
+print(r_ods1,r_ods2)
+
+plt.imshow(masked_section1, norm = LogNorm(), origin='lower', cmap = "hsv")
+plt.colorbar()
+
+aper1 = EllipticalAperture((geometry2.x0, geometry2.y0), r_ods1, r_ods1 * (1 - 0.27), geometry2.pa)
+aper1.plot(color='red')
+aper2 = EllipticalAperture((geometry2.x0, geometry2.y0), r_ods2, r_ods2 * (1 - 0.27), geometry2.pa)
+aper2.plot(color='red')
+
+plt.show()
+
+#1) region od r_ods1 do r_ods2 je izmedju ove dve elipse, tu sjaj ne prati eksponencijalni model i stagnira više od ostatka
+#2) region od r=0 do r_ods1 takodje nije opisan eksponencijalnim modelom (moffat probati), ali pad je veći od eksponencijalnog
+#3) postoji malo odstupanje na obodu galaksije (opciono naći i za to f-ju)
+
+
+# %%
+#nelogaritmovana x osa: fit lošije izgleda za spoljni deo galaksije
+
+popt_o2, pcov_o2 = curve_fit(exp, sma_arcsec , sb_mag, p0=[a_1, b_1, c_1]) #sigma=isolist.int_err
+plt.errorbar(sma_arcsec, sb_mag, fmt='o', label='Podaci', markersize=2, capsize=2) #yerr=surface_brightnesses_error_o3
+plt.plot(sma_arcsec, exp(sma_arcsec, *popt_o2), label="Eksponencijalni fit: a=%5.3f, b=%5.3f, c=%5.3f" % tuple(popt_o2), color = 'red')
+plt.legend()
+plt.xlabel(r'R $[arcsec]$')
+plt.ylabel(r'$\mu$ $[\frac{mag}{arcsec^2}]$')
+plt.title("NGC 941 profil površinskog sjaja")
+
+ax = plt.gca()
+ax.set_ylim(ax.get_ylim()[::-1]) #osa je okrenuta
+
+# %%
+r_01 = 193.60000000000002 #polupr. galaksije
+r_min = 0.5254832450356509
+r_max = 193.60000000000002
+sb_min = 4.505228997651202
+sb_max = 0.01384539486054968
+
+r_1 = r_01*0.39591036
+n_sersic2 = 1.47
+
+amp_rmax = - 2.5*np.log10(sb_max) + 2.5*np.log10(exptime) + 24 + 2.5*np.log10(0.396)
+r_maximum = r_max*0.39591036
+
+print("rmax:", r_maximum)
+print("Amplituda na rmax:", amp_rmax)
+print("")
+
+amp_rmin = - 2.5*np.log10(sb_min) + 2.5*np.log10(exptime) + 24 + 2.5*np.log10(0.396)
+r_minimum = r_min*0.39591036
+
+print("rmin:", r_minimum)
+print("Amplituda na rmin:", amp_rmin)
+print("")
+
+print("Poluprečnik:", r_1)
+
+
+
+
+
+
+
